@@ -306,15 +306,20 @@ async function analyzeRecording(raw, sr){
   const ampAt = t => avg[Math.round(pre + t * fs2)] || 0;
   // when S1 and S2 are similar in size the main sound alternates between them, so the size ratio is not meaningful
   const amp = ampAt(s2) / ampAt(s1);
-  return { ...res, s1, s2, sys, dia, s1s2: sl, s2s1Amp: amp < 0.9 ? amp : null, ratio: sysE / diaE };
+  // at fast heart rates systole and diastole last almost equally long, so S1/S2 labels may be swapped:
+  // then judge by whichever of the two intervals carries more extra sound
+  const ambiguous = (dl - sl) / dl < 0.25, se = sysE / diaE;
+  return { ...res, s1, s2, sys, dia, s1s2: sl, s2s1Amp: amp < 0.9 ? amp : null, ambiguous, ratio: ambiguous ? Math.max(se, 1 / se) : se };
 }
 
 function verdict(r){
   if (r.error) return { level: "warn", text: r.error };
   if (r.beats < 15 || r.goodPct < 30) return { level: "warn", text: `녹음 품질이 낮아 심잡음 판단을 보류합니다 (깨끗한 구간 ${Math.round(r.goodPct)}%, 분석 박동 ${r.beats}개). 깨끗한 구간 30% 이상, 박동 15개 이상이 필요합니다.` };
-  if (r.ratio >= 1.8) return { level: "bad", text: "수축기(S1–S2 사이)에 뚜렷한 추가 소리가 있습니다. 심잡음일 수 있으니 청진으로 확인하세요." };
-  if (r.ratio >= 1.3) return { level: "warn", text: "수축기에 약간의 추가 소리가 있습니다. 약한 심잡음이거나 녹음 잡음일 수 있습니다." };
-  return { level: "good", text: "수축기에 추가 소리가 보이지 않습니다. 이 녹음에서는 심잡음 소견이 없습니다." };
+  const where = r.ambiguous ? "두 심음 사이" : "수축기(S1–S2 사이)";
+  const note = r.ambiguous ? " 심박이 빨라 S1·S2 구분이 불확실하므로 두 구간 중 소리가 큰 쪽으로 판정했습니다." : "";
+  if (r.ratio >= 1.8) return { level: "bad", text: `${where}에 뚜렷한 추가 소리가 있습니다. 심잡음일 수 있으니 청진으로 확인하세요.${note}` };
+  if (r.ratio >= 1.3) return { level: "warn", text: `${where}에 약간의 추가 소리가 있습니다. 약한 심잡음이거나 녹음 잡음일 수 있습니다.${note}` };
+  return { level: "good", text: `${where}에 추가 소리가 보이지 않습니다. 이 녹음에서는 심잡음 소견이 없습니다.${note}` };
 }
 let lastReport = null;
 function renderReport(r, label){
@@ -347,9 +352,13 @@ function drawBeatAvg(r){
   g.strokeStyle = css("--trace"); g.lineWidth = 2 * dpr; g.beginPath();
   for (let k = 0; k < n; k++) k ? g.lineTo(X(k), Y(r.avg[k])) : g.moveTo(X(k), Y(r.avg[k])); g.stroke();
   g.fillStyle = css("--muted"); g.font = `${11 * dpr}px ${css("--f-body")}`; g.textAlign = "center";
-  if (r.sys){
+  if (r.sys && !r.ambiguous){
     g.fillText("S1", X(r.pre + r.s1 * r.fs2), H - 4 * dpr); g.fillText("S2", X(r.pre + r.s2 * r.fs2), H - 4 * dpr);
     g.fillText("수축기", X(r.pre + (r.sys[0] + r.sys[1]) / 2 * r.fs2), 14 * dpr);
+  }
+  if (r.sys && r.ambiguous){
+    g.fillText("S1?", X(r.pre + r.s1 * r.fs2), H - 4 * dpr); g.fillText("S2?", X(r.pre + r.s2 * r.fs2), H - 4 * dpr);
+    g.fillText("수축기(추정)", X(r.pre + (r.sys[0] + r.sys[1]) / 2 * r.fs2), 14 * dpr);
   }
   g.textAlign = "start";
 }
