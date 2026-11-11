@@ -267,7 +267,12 @@ async function analyzeRecording(raw, sr){
   // cycle length from envelope autocorrelation (0.25–1.5 s)
   const e100 = new Float32Array(Math.floor(n / 20)); for (let i = 0; i < e100.length; i++){ let s = 0; for (let j = 0; j < 20; j++) s += env[i * 20 + j]; e100[i] = s / 20; }
   const ac = zAuto(e100.subarray(0, Math.min(e100.length, 6000)), 25, 150);
-  let L = 0; for (let k = 26; k < 150; k++) if (ac[k] > ac[k - 1] && ac[k] >= ac[k + 1] && (!L || ac[k] > ac[L])) L = k;
+  // shortest lag that is nearly as strong as the best one and repeats at twice the lag: the tallest peak can
+  // be two or three cycles when beats alternate in loudness
+  const locs = []; for (let k = 26; k < 150; k++) if (ac[k] > ac[k - 1] && ac[k] >= ac[k + 1] && ac[k] > 0) locs.push(k);
+  const amax = Math.max(0, ...locs.map(k => ac[k])), near = t => Math.max(-1, ...locs.filter(k => Math.abs(k - t) <= 0.1 * t).map(k => ac[k]));
+  let L = 0; for (const k of locs) if (ac[k] >= 0.7 * amax && (2 * k >= 150 || near(2 * k) >= 0.6 * amax)){ L = k; break; }
+  if (!L && locs.length) L = locs.reduce((a, k) => ac[k] > ac[a] ? k : a);
   if (!L) return { ...res, error: "심박 주기를 찾지 못했습니다. 잡음이 적은 상태에서 다시 녹음해 주세요." };
   const cyc = L / 100, dist = Math.round(0.6 * cyc * fs2);
   // one main sound per cycle: greedy pick of the tallest local maxima
