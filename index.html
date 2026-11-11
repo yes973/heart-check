@@ -291,18 +291,53 @@ async function analyzeRecording(raw, sr){
   Object.assign(res, { hr: median(Float32Array.from(hrs)), hrMin: pct(hrs, 10), hrMax: pct(hrs, 90), beats: use.length, cycle: mi });
   if (use.length < 8) return { ...res, error: "깨끗한 박동이 " + use.length + "개뿐이라 S1·S2 분석을 할 수 없습니다. 잡음이 적을 때 다시 녹음해 주세요." };
   // ensemble average of the envelope around the main sound
-  const W = pre + post, avg = new Float32Array(W), segs = [];
-  for (const p of use){ const s = env.slice(p - pre, p + post); segs.push(s); for (let k = 0; k < W; k++) avg[k] += s[k] / use.length; }
-  const top = avg[pre];
-  let sec = -1; for (let k = pre + Math.round(0.08 * mi * fs2); k < pre + Math.round(0.75 * mi * fs2); k++) if (avg[k] > avg[k - 1] && avg[k] >= avg[k + 1] && avg[k] > 0.08 * top && (sec < 0 || avg[k] > avg[sec])) sec = k;
+  const W = pre + post, M = Math.round(mi * fs2);
+  // the second sound: a local maximum followed by the steepest drop (S2 falls into quiet diastole,
+  // while ripples on top of a loud murmur do not)
+  const findSec = avg => {
+    const top = avg[pre], look = Math.round(0.12 * mi * fs2); let sec = -1, best = 0;
+    for (let k = pre + Math.round(0.08 * mi * fs2); k < pre + Math.round(0.75 * mi * fs2); k++){
+      if (!(avg[k] > avg[k - 1] && avg[k] >= avg[k + 1] && avg[k] > 0.08 * top)) continue;
+      let lo = avg[k]; for (let j = k; j < Math.min(W, k + look); j++) lo = Math.min(lo, avg[j]);
+      if (avg[k] - lo > best){ best = avg[k] - lo; sec = k; }
+    }
+    return sec;
+  };
+  const okWin = st => { if (st < 0 || st + W > n) return false; for (let k = st; k < st + W; k++) if (clip[k]) return false; return true; };
+  const build = starts => { const a = new Float32Array(W); for (const st of starts) for (let k = 0; k < W; k++) a[k] += env[st + k] / starts.length; return a; };
+  // at fast heart rates the tallest sound per beat can be S1 on some beats and S2 on others, which would
+  // smear a murmur over both intervals: realign each beat to the average (main sound, or the other sound)
+  let starts = use.map(p => p - pre), avg = build(starts);
+  for (let it = 0; it < 3; it++){
+    const sec = findSec(avg); if (sec < 0) break;
+    const d = sec - pre, offs = [0, d, d - M];
+    let am = 0; for (let k = 0; k < W; k++) am += avg[k] / W;
+    const next = [];
+    for (const p of use){
+      let bs = null, bc = -Infinity;
+      for (const o of offs){
+        const st = p - pre - o; if (!okWin(st)) continue;
+        let sm = 0; for (let k = 0; k < W; k++) sm += env[st + k] / W;
+        let c = 0, v1 = 0, v2 = 0; for (let k = 0; k < W; k++){ const x = env[st + k] - sm, y = avg[k] - am; c += x * y; v1 += x * x; v2 += y * y; }
+        c /= Math.sqrt(v1 * v2) || 1; if (bs === null || c > bc + 0.02){ bc = c; bs = st; }   // keep the main sound unless clearly worse
+      }
+      if (bs !== null) next.push(bs);
+    }
+    if (next.length < 8) break;
+    starts = next; avg = build(starts);
+  }
+  const segs = starts.map(st => env.slice(st, st + W)), sec = findSec(avg), top = avg[pre];
+  res.beats = starts.length;
   Object.assign(res, { avg, segs, pre, fs2, top });
   if (sec < 0) return { ...res, error: "평균 박동에서 두 번째 심음(S2)을 찾지 못했습니다." };
   const dt = (sec - pre) / fs2, mainIsS1 = dt < mi / 2;
   const s1 = mainIsS1 ? 0 : dt - mi, s2 = mainIsS1 ? dt : 0;     // seconds relative to main sound
   const sys = [s1, s2], dia = [s2, s1 + mi];
-  const meanIn = (t0, t1) => { let s = 0, c = 0; for (let k = Math.max(0, Math.round(pre + t0 * fs2)); k < Math.min(W, Math.round(pre + t1 * fs2)); k++){ s += avg[k]; c++; } return c ? s / c : NaN; };
+  // floor of the interval rather than its mean: a murmur lifts the whole interval, while the tails of S1
+  // and S2 only lift its edges (which matters when systole is short)
+  const minIn = (t0, t1) => { let m = Infinity; for (let k = Math.max(0, Math.round(pre + t0 * fs2)); k < Math.min(W, Math.round(pre + t1 * fs2)); k++) m = Math.min(m, avg[k]); return isFinite(m) ? m : NaN; };
   const sl = sys[1] - sys[0], dl = dia[1] - dia[0];
-  const sysE = meanIn(sys[0] + 0.25 * sl, sys[0] + 0.75 * sl), diaE = meanIn(dia[0] + 0.3 * dl, dia[0] + 0.6 * dl);
+  const sysE = minIn(sys[0] + 0.25 * sl, sys[0] + 0.75 * sl), diaE = minIn(dia[0] + 0.3 * dl, dia[0] + 0.6 * dl);
   const ampAt = t => avg[Math.round(pre + t * fs2)] || 0;
   // when S1 and S2 are similar in size the main sound alternates between them, so the size ratio is not meaningful
   const amp = ampAt(s2) / ampAt(s1);
