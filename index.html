@@ -76,6 +76,15 @@ details{background:var(--panel);border:1px solid var(--line);border-radius:10px;
 summary{cursor:pointer;font-weight:600}
 details ul{margin:8px 0 2px;padding-left:20px}
 details li{margin:3px 0}
+.report{display:flex;flex-direction:column;gap:10px;border-top:2px solid var(--line);padding-top:14px}
+.rp-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap}
+.rp-head h2{margin:0;font-size:1.1rem}
+.verdict{margin:0;padding:10px 14px;border-radius:8px;background:var(--panel);border:1px solid var(--line);border-left:6px solid var(--muted);font-weight:600}
+.verdict[data-level="good"]{border-left-color:var(--good)}
+.verdict[data-level="warn"]{border-left-color:var(--warn)}
+.verdict[data-level="bad"]{border-left-color:var(--bad)}
+#beatAvg{height:160px}
+textarea{width:100%;font:13px/1.5 var(--f-body);background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px}
 #settings{font:500 .75rem var(--f-num);color:var(--muted);word-break:break-all}
 </style>
 </head>
@@ -117,8 +126,24 @@ details li{margin:3px 0}
       <label for="mic" class="note">입력 장치</label>
       <select id="mic"><option value="">기본 마이크</option></select>
     </div>
-    <div class="file"><label for="fileIn">마이크 없이 시험: 녹음 파일(WAV) 재생 분석</label><br><input type="file" id="fileIn" accept="audio/*"></div>
+    <div class="file"><label for="fileIn">저장된 녹음 파일 분석 (RecForge 등에서 녹음한 WAV도 가능)</label><br><input type="file" id="fileIn" accept="audio/*"></div>
     <div id="settings"></div>
+  </section>
+
+  <section class="report" id="report" hidden aria-live="polite">
+    <div class="rp-head"><h2>녹음 분석 결과</h2><span class="note" id="rpLabel"></span></div>
+    <p class="verdict" id="rpVerdict" data-level="idle">분석 중…</p>
+    <div class="metrics">
+      <div class="m"><div class="k">길이 · 깨끗한 구간</div><div class="v"><span id="rpLen">--</span><span class="u">초 ·</span> <span id="rpGood">--</span><span class="u">%</span></div></div>
+      <div class="m"><div class="k">심박수 (10–90%)</div><div class="v"><span id="rpHr">--</span><span class="u">회/분</span></div><div class="note" id="rpHrRange"></div></div>
+      <div class="m"><div class="k">S1–S2 간격 · S2 크기</div><div class="v"><span id="rpS1S2">--</span><span class="u">ms ·</span> <span id="rpS2S1">--</span><span class="u">%</span></div></div>
+      <div class="m"><div class="k">수축기/확장기 에너지</div><div class="v" id="rpRatio">--</div><div class="note">분석 박동 <span id="rpBeats">0</span>개</div></div>
+    </div>
+    <div class="trace"><canvas id="beatAvg"></canvas>
+      <div class="cap"><span>박동 평균 (회색: 각 박동, 검정: 평균)</span><span>분홍 구간: 수축기</span></div></div>
+    <div class="row"><button id="btnCopy">결과 복사</button></div>
+    <textarea id="rpText" hidden rows="6" aria-label="분석 결과 글"></textarea>
+    <p class="note">수축기/확장기 에너지는 1.0 근처가 정상 녹음의 값입니다. 1.3·1.8 기준은 실험적이며, 심잡음 환자 녹음으로 아직 보정하지 않았습니다. 진단이 아니라 녹음 확인용입니다.</p>
   </section>
 
   <details>
@@ -213,6 +238,135 @@ function judge(m){
   return { level: "warn", title: "심박 리듬이 흐릿합니다", msg: "위치를 좌측 심첨부 쪽으로 조금씩 옮겨 가장 또렷한 곳을 찾으세요." };
 }
 
+// ---- Post-recording analysis: quality timeline, heart rate, beat-averaged S1/S2, systolic energy ----
+async function bandpass(raw, sr){
+  const oc = new OfflineAudioContext(1, raw.length, sr), buf = oc.createBuffer(1, raw.length, sr);
+  buf.copyToChannel(raw, 0);
+  const s = oc.createBufferSource(); s.buffer = buf;
+  const mk = (type, f) => { const b = oc.createBiquadFilter(); b.type = type; b.frequency.value = f; b.Q.value = Math.SQRT1_2; return b; };
+  const chain = [mk("highpass", 25), mk("highpass", 25), mk("lowpass", 400), mk("lowpass", 400)];
+  s.connect(chain[0]); for (let i = 1; i < chain.length; i++) chain[i - 1].connect(chain[i]); chain[3].connect(oc.destination);
+  s.start(); return (await oc.startRendering()).getChannelData(0);
+}
+async function analyzeRecording(raw, sr){
+  const filt = await bandpass(raw, sr);
+  // quality timeline with the same realtime analyzer
+  const qa = new Analyzer(sr), step = Math.round(0.25 * sr), levels = [];
+  for (let i = 0; i + step <= raw.length; i += step){ qa.push(raw.subarray(i, i + step), filt.subarray(i, i + step)); const q = qa.analyze(); if (q) levels.push(q.level); }
+  // decimate to ~2 kHz and build a zero-phase energy envelope
+  const D = Math.round(sr / 2000), fs2 = sr / D, n = Math.floor(filt.length / D);
+  const env = new Float32Array(n), clip = new Uint8Array(n);
+  for (let i = 0; i < n; i++){ let s = 0, c = 0; for (let j = i * D; j < (i + 1) * D; j++){ s += filt[j]; if (Math.abs(raw[j]) > 0.98) c = 1; } env[i] = (s / D) ** 2; clip[i] = c; }
+  const a = Math.exp(-2 * Math.PI * 30 / fs2);
+  for (let pass = 0; pass < 2; pass++){ let v = env[0]; for (let i = 0; i < n; i++){ v = (1 - a) * env[i] + a * v; env[i] = v; } v = env[n - 1]; for (let i = n - 1; i >= 0; i--){ v = (1 - a) * env[i] + a * v; env[i] = v; } }
+  for (let i = 0; i < n; i++) env[i] = Math.sqrt(Math.max(env[i], 0));
+  const res = { seconds: raw.length / sr, levels, goodPct: levels.length ? levels.filter(l => l === "good").length / levels.length * 100 : 0, beats: 0 };
+  if (res.seconds < 6) return { ...res, error: "녹음이 너무 짧습니다. 10초 이상 녹음해 주세요." };
+  // cycle length from envelope autocorrelation (0.25–1.5 s)
+  const e100 = new Float32Array(Math.floor(n / 20)); for (let i = 0; i < e100.length; i++){ let s = 0; for (let j = 0; j < 20; j++) s += env[i * 20 + j]; e100[i] = s / 20; }
+  const ac = zAuto(e100.subarray(0, Math.min(e100.length, 6000)), 25, 150);
+  let L = 0; for (let k = 26; k < 150; k++) if (ac[k] > ac[k - 1] && ac[k] >= ac[k + 1] && (!L || ac[k] > ac[L])) L = k;
+  if (!L) return { ...res, error: "심박 주기를 찾지 못했습니다. 잡음이 적은 상태에서 다시 녹음해 주세요." };
+  const cyc = L / 100, dist = Math.round(0.6 * cyc * fs2);
+  // one main sound per cycle: greedy pick of the tallest local maxima
+  const floor = pct(env, 99) * 0.3, cand = [];
+  for (let i = 1; i < n - 1; i++) if (env[i] > env[i - 1] && env[i] >= env[i + 1] && env[i] > floor) cand.push(i);
+  cand.sort((p, q) => env[q] - env[p]);
+  const taken = new Uint8Array(n), peaks = [];
+  for (const p of cand){ let ok = true; for (let k = Math.max(0, p - dist); k <= Math.min(n - 1, p + dist); k++) if (taken[k]){ ok = false; break; } if (ok){ taken[p] = 1; peaks.push(p); } }
+  peaks.sort((p, q) => p - q);
+  const iv = []; for (let i = 1; i < peaks.length; i++) iv.push((peaks[i] - peaks[i - 1]) / fs2);
+  if (iv.length < 4) return { ...res, error: "박동을 충분히 찾지 못했습니다." };
+  const mi = median(Float32Array.from(iv)), ampMed = median(Float32Array.from(peaks.map(p => env[p])));
+  const pre = Math.round(0.5 * mi * fs2), post = Math.round(0.85 * mi * fs2), use = [];
+  for (let i = 1; i < peaks.length - 1; i++){
+    const p = peaks[i], d1 = iv[i - 1], d2 = iv[i];
+    if (d1 < 0.85 * mi || d1 > 1.15 * mi || d2 < 0.85 * mi || d2 > 1.15 * mi) continue;
+    if (env[p] < 0.4 * ampMed || env[p] > 2.5 * ampMed || p - pre < 0 || p + post >= n) continue;
+    let c = 0; for (let k = p - pre; k < p + post; k++) c |= clip[k]; if (c) continue;
+    use.push(p);
+  }
+  const usedIv = []; for (let i = 1; i < peaks.length; i++) if (use.includes(peaks[i]) || use.includes(peaks[i - 1])) usedIv.push(iv[i - 1]);
+  const hrs = (usedIv.length ? usedIv : iv).map(v => 60 / v);
+  Object.assign(res, { hr: median(Float32Array.from(hrs)), hrMin: pct(hrs, 10), hrMax: pct(hrs, 90), beats: use.length, cycle: mi });
+  if (use.length < 8) return { ...res, error: "깨끗한 박동이 " + use.length + "개뿐이라 S1·S2 분석을 할 수 없습니다. 잡음이 적을 때 다시 녹음해 주세요." };
+  // ensemble average of the envelope around the main sound
+  const W = pre + post, avg = new Float32Array(W), segs = [];
+  for (const p of use){ const s = env.slice(p - pre, p + post); segs.push(s); for (let k = 0; k < W; k++) avg[k] += s[k] / use.length; }
+  const top = avg[pre];
+  let sec = -1; for (let k = pre + Math.round(0.08 * mi * fs2); k < pre + Math.round(0.75 * mi * fs2); k++) if (avg[k] > avg[k - 1] && avg[k] >= avg[k + 1] && avg[k] > 0.08 * top && (sec < 0 || avg[k] > avg[sec])) sec = k;
+  Object.assign(res, { avg, segs, pre, fs2, top });
+  if (sec < 0) return { ...res, error: "평균 박동에서 두 번째 심음(S2)을 찾지 못했습니다." };
+  const dt = (sec - pre) / fs2, mainIsS1 = dt < mi / 2;
+  const s1 = mainIsS1 ? 0 : dt - mi, s2 = mainIsS1 ? dt : 0;     // seconds relative to main sound
+  const sys = [s1, s2], dia = [s2, s1 + mi];
+  const meanIn = (t0, t1) => { let s = 0, c = 0; for (let k = Math.max(0, Math.round(pre + t0 * fs2)); k < Math.min(W, Math.round(pre + t1 * fs2)); k++){ s += avg[k]; c++; } return c ? s / c : NaN; };
+  const sl = sys[1] - sys[0], dl = dia[1] - dia[0];
+  const sysE = meanIn(sys[0] + 0.25 * sl, sys[0] + 0.75 * sl), diaE = meanIn(dia[0] + 0.3 * dl, dia[0] + 0.6 * dl);
+  const ampAt = t => avg[Math.round(pre + t * fs2)] || 0;
+  // when S1 and S2 are similar in size the main sound alternates between them, so the size ratio is not meaningful
+  const amp = ampAt(s2) / ampAt(s1);
+  return { ...res, s1, s2, sys, dia, s1s2: sl, s2s1Amp: amp < 0.9 ? amp : null, ratio: sysE / diaE };
+}
+
+function verdict(r){
+  if (r.error) return { level: "warn", text: r.error };
+  if (r.beats < 15 || r.goodPct < 30) return { level: "warn", text: `녹음 품질이 낮아 심잡음 판단을 보류합니다 (깨끗한 구간 ${Math.round(r.goodPct)}%, 분석 박동 ${r.beats}개). 깨끗한 구간 30% 이상, 박동 15개 이상이 필요합니다.` };
+  if (r.ratio >= 1.8) return { level: "bad", text: "수축기(S1–S2 사이)에 뚜렷한 추가 소리가 있습니다. 심잡음일 수 있으니 청진으로 확인하세요." };
+  if (r.ratio >= 1.3) return { level: "warn", text: "수축기에 약간의 추가 소리가 있습니다. 약한 심잡음이거나 녹음 잡음일 수 있습니다." };
+  return { level: "good", text: "수축기에 추가 소리가 보이지 않습니다. 이 녹음에서는 심잡음 소견이 없습니다." };
+}
+let lastReport = null;
+function renderReport(r, label){
+  lastReport = { r, label };
+  const v = verdict(r), f1 = x => (x == null || isNaN(x)) ? "--" : x;
+  $("report").hidden = false;
+  $("rpLabel").textContent = label;
+  $("rpLen").textContent = r.seconds.toFixed(1);
+  $("rpGood").textContent = Math.round(r.goodPct);
+  $("rpHr").textContent = r.hr ? Math.round(r.hr) : "--";
+  $("rpHrRange").textContent = r.hr ? `${Math.round(r.hrMin)}–${Math.round(r.hrMax)}` : "";
+  $("rpBeats").textContent = r.beats || 0;
+  $("rpS1S2").textContent = r.s1s2 ? Math.round(r.s1s2 * 1000) : "--";
+  $("rpS2S1").textContent = r.s2s1Amp ? Math.round(r.s2s1Amp * 100) : "--";
+  $("rpRatio").textContent = r.ratio ? r.ratio.toFixed(2) : "--";
+  $("rpVerdict").dataset.level = v.level; $("rpVerdict").textContent = v.text;
+  drawBeatAvg(r);
+  $("report").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+function drawBeatAvg(r){
+  const [g, W, H, dpr] = fit($("beatAvg"));
+  if (W < 20 || H < 20) return;
+  g.fillStyle = css("--panel"); g.fillRect(0, 0, W, H);
+  if (!r.avg){ g.fillStyle = css("--muted"); g.font = `${13 * dpr}px ${css("--f-body")}`; g.fillText("평균 박동을 만들 수 없습니다", 12 * dpr, H / 2); return; }
+  const n = r.avg.length, padB = 18 * dpr, X = k => k / (n - 1) * W, top = Math.max(r.top, 1e-9);
+  const Y = v => (H - padB) - Math.min(1.15, v / top) / 1.15 * (H - padB - 6 * dpr);
+  if (r.sys){ g.fillStyle = css("--grid-minor"); g.fillRect(X(r.pre + r.sys[0] * r.fs2), 0, X(r.pre + r.sys[1] * r.fs2) - X(r.pre + r.sys[0] * r.fs2), H - padB); }
+  g.strokeStyle = css("--line"); g.lineWidth = 0.6 * dpr;
+  for (const s of r.segs.slice(0, 60)){ g.beginPath(); for (let k = 0; k < n; k++) k ? g.lineTo(X(k), Y(s[k])) : g.moveTo(X(k), Y(s[k])); g.stroke(); }
+  g.strokeStyle = css("--trace"); g.lineWidth = 2 * dpr; g.beginPath();
+  for (let k = 0; k < n; k++) k ? g.lineTo(X(k), Y(r.avg[k])) : g.moveTo(X(k), Y(r.avg[k])); g.stroke();
+  g.fillStyle = css("--muted"); g.font = `${11 * dpr}px ${css("--f-body")}`; g.textAlign = "center";
+  if (r.sys){
+    g.fillText("S1", X(r.pre + r.s1 * r.fs2), H - 4 * dpr); g.fillText("S2", X(r.pre + r.s2 * r.fs2), H - 4 * dpr);
+    g.fillText("수축기", X(r.pre + (r.sys[0] + r.sys[1]) / 2 * r.fs2), 14 * dpr);
+  }
+  g.textAlign = "start";
+}
+function reportText(){
+  if (!lastReport) return "";
+  const { r, label } = lastReport, v = verdict(r);
+  return [`심음 녹음 분석 (${label})`, `길이 ${r.seconds.toFixed(1)}초, 깨끗한 구간 ${Math.round(r.goodPct)}%`,
+    r.hr ? `심박수 ${Math.round(r.hr)}회/분 (${Math.round(r.hrMin)}–${Math.round(r.hrMax)}), 분석 박동 ${r.beats}개` : "",
+    r.s1s2 ? `S1–S2 간격 ${Math.round(r.s1s2 * 1000)} ms, S2/S1 크기 ${r.s2s1Amp ? Math.round(r.s2s1Amp * 100) + "%" : "비슷함"}, 수축기/확장기 에너지 ${r.ratio.toFixed(2)}` : "",
+    v.text].filter(Boolean).join("\n");
+}
+async function reportFromSamples(raw, sr, label){
+  $("report").hidden = false; $("rpVerdict").dataset.level = "idle"; $("rpVerdict").textContent = "분석 중…"; $("rpLabel").textContent = label;
+  try { renderReport(await analyzeRecording(raw, sr), label); }
+  catch (e){ $("rpVerdict").dataset.level = "bad"; $("rpVerdict").textContent = "분석하지 못했습니다: " + (e && e.message || e); }
+}
+
 // ---- Audio graph ----
 const WORKLET = `class Tap extends AudioWorkletProcessor{constructor(){super();this.r=new Float32Array(2048);this.f=new Float32Array(2048);this.i=0}
 process(inp){const x=inp[0];if(!x||!x.length)return true;const a=x[0],b=x[1]||x[0];
@@ -262,17 +416,14 @@ async function startMic(){
 }
 const onOff = v => v === undefined ? "?" : v ? "켜짐" : "꺼짐";
 
-async function startFile(file){
-  stopAll();
+async function analyzeFile(file){
   const c = new AudioContext();
-  const buf = await c.decodeAudioData(await file.arrayBuffer());
-  src = c.createBufferSource(); src.buffer = buf;
-  await buildGraph(src);
-  src.onended = () => { setStatus({ level: "idle", title: "파일 재생 끝", msg: "다른 파일을 고르거나 마이크로 시작하세요." }); stopAll(true); };
-  src.start();
-  mode = "file";
-  $("settings").textContent = `파일: ${file.name} · ${buf.sampleRate} Hz · ${buf.duration.toFixed(1)}초 (실시간 재생 분석)`;
-  setRunning(true, false);
+  try {
+    const buf = await c.decodeAudioData(await file.arrayBuffer());
+    const ch = buf.getChannelData(0), raw = new Float32Array(ch.length);
+    for (let k = 0; k < buf.numberOfChannels; k++){ const d = buf.getChannelData(k); for (let i = 0; i < d.length; i++) raw[i] += d[i] / buf.numberOfChannels; }
+    await reportFromSamples(raw, buf.sampleRate, file.name);
+  } finally { c.close(); }
 }
 
 function stopAll(keepView){
@@ -307,7 +458,13 @@ function toggleRec(){
   $("btnRec").textContent = recording ? "녹음 끝" : "녹음";
   $("recBadge").hidden = !recording;
   if (recording){ recChunks = []; recLen = 0; cleanSec = 0; $("btnSave").disabled = true; }
-  else $("btnSave").disabled = recLen === 0;
+  else {
+    $("btnSave").disabled = recLen === 0;
+    if (recLen && an){
+      const all = new Float32Array(recLen); let o = 0; for (const c of recChunks){ all.set(c, o); o += c.length; }
+      reportFromSamples(all, Math.round(an.fs2 * an.D), "방금 녹음");
+    }
+  }
 }
 
 function saveWav(){
@@ -380,7 +537,13 @@ $("btnListen").onclick = async () => {
 $("btnRec").onclick = toggleRec;
 $("btnSave").onclick = saveWav;
 $("mic").onchange = () => { if (stream) startMic().catch(e => { setStatus({ level: "bad", title: "이 입력 장치를 열 수 없습니다", msg: String(e && e.message || e) }); stopAll(true); }); };
-$("fileIn").onchange = e => { const f = e.target.files[0]; if (f) startFile(f).catch(err => setStatus({ level: "bad", title: "파일을 읽을 수 없습니다", msg: String(err && err.message || err) })); };
+$("fileIn").onchange = e => { const f = e.target.files[0]; if (f) analyzeFile(f).catch(err => { $("report").hidden = false; $("rpVerdict").dataset.level = "bad"; $("rpVerdict").textContent = "파일을 읽을 수 없습니다: " + (err && err.message || err); }); };
+$("btnCopy").onclick = async () => {
+  const t = reportText();
+  try { await navigator.clipboard.writeText(t); $("btnCopy").textContent = "복사됨"; }
+  catch (_) { const ta = $("rpText"); ta.hidden = false; ta.value = t; ta.select(); $("btnCopy").textContent = "아래 글을 길게 눌러 복사"; }
+  setTimeout(() => { $("btnCopy").textContent = "결과 복사"; }, 2500);
+};
 window.addEventListener("resize", () => requestAnimationFrame(draw));
 draw();
 </script>
