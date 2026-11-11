@@ -230,6 +230,8 @@ function judge(m){
   if (m.rms5 < TH.minRms) return { level: "bad", title: "신호가 거의 없습니다", msg: "마이크 연결과 입력 장치를 확인하고, 헤드를 피부에 밀착하세요." };
   if (m.spike > TH.spike) return { level: "bad", title: "움직임·마찰음", msg: "헤드가 미끄러지거나 손·털이 스쳤습니다. 헤드를 고정하고 잠시 기다리세요." };
   if (m.strength >= TH.strGood && m.ratio >= TH.ratioGood) return { level: "good", title: "좋습니다. 그대로 유지하세요", msg: "심음이 또렷하게 잡히고 있습니다." };
+  // very clean sound with an irregular rhythm (respiratory sinus arrhythmia in calm dogs blurs the rhythm score)
+  if (m.ratio >= 2 * TH.ratioGood && m.strength >= 0.75 * TH.strWarn) return { level: "good", title: "좋습니다. 그대로 유지하세요", msg: "심음이 또렷합니다. 리듬이 불규칙한 것은 호흡에 따른 정상 변동일 수 있습니다." };
   if (m.ratio < TH.ratioWarn || m.strength < TH.strWarn){
     if (m.breath >= TH.breath) return { level: "bad", title: "호흡·헐떡임 잡음", msg: "잡음이 호흡 주기로 출렁입니다. 2–3초 입을 살짝 잡아 헐떡임을 멈춰 주세요." };
     return { level: "bad", title: "잡음이 심음을 덮고 있습니다", msg: "털 마찰·헐떡임·주변 소음을 줄이세요. 헤드를 단단히 대고, 털은 살짝 적셔 보세요." };
@@ -278,15 +280,25 @@ async function analyzeRecording(raw, sr){
   const iv = []; for (let i = 1; i < peaks.length; i++) iv.push((peaks[i] - peaks[i - 1]) / fs2);
   if (iv.length < 4) return { ...res, error: "박동을 충분히 찾지 못했습니다." };
   const mi = median(Float32Array.from(iv)), ampMed = median(Float32Array.from(peaks.map(p => env[p])));
-  const pre = Math.round(0.5 * mi * fs2), post = Math.round(0.85 * mi * fs2), use = [];
-  for (let i = 1; i < peaks.length - 1; i++){
-    const p = peaks[i], d1 = iv[i - 1], d2 = iv[i];
-    if (d1 < 0.85 * mi || d1 > 1.15 * mi || d2 < 0.85 * mi || d2 > 1.15 * mi) continue;
-    if (env[p] < 0.4 * ampMed || env[p] > 2.5 * ampMed || p - pre < 0 || p + post >= n) continue;
-    let c = 0; for (let k = p - pre; k < p + post; k++) c |= clip[k]; if (c) continue;
-    use.push(p);
-  }
-  const usedIv = []; for (let i = 1; i < peaks.length; i++) if (use.includes(peaks[i]) || use.includes(peaks[i - 1])) usedIv.push(iv[i - 1]);
+  const pre = Math.round(0.5 * mi * fs2), post = Math.round(0.85 * mi * fs2), gap = Math.round(0.1 * mi * fs2);
+  // beats with regular neighbouring intervals; each beat keeps its samples only between its neighbouring
+  // main sounds (lo..hi)
+  const pick = (tLo, tHi) => { const out = [];
+    for (let i = 1; i < peaks.length - 1; i++){
+      const p = peaks[i], d1 = iv[i - 1], d2 = iv[i];
+      if (d1 < tLo * mi || d1 > tHi * mi || d2 < tLo * mi || d2 > tHi * mi) continue;
+      if (env[p] < 0.4 * ampMed || env[p] > 2.5 * ampMed || p - pre < 0 || p + post >= n) continue;
+      const b = { p, lo: peaks[i - 1] + gap, hi: peaks[i + 1] - gap };
+      let c = 0; for (let k = Math.max(p - pre, b.lo); k < Math.min(p + post, b.hi); k++) c |= clip[k]; if (c) continue;
+      out.push(b);
+    }
+    return out; };
+  // calm dogs often have respiratory sinus arrhythmia, which leaves few regular beats: then accept 0.6-1.6x
+  // (only as a fallback, since wide limits also let in beats whose tallest sound was S2)
+  let use = pick(0.85, 1.15);
+  if (use.length < 15){ const wide = pick(0.6, 1.6); if (wide.length > use.length) use = wide; }
+  const usedP = new Set(use.map(b => b.p));
+  const usedIv = []; for (let i = 1; i < peaks.length; i++) if (usedP.has(peaks[i]) || usedP.has(peaks[i - 1])) usedIv.push(iv[i - 1]);
   const hrs = (usedIv.length ? usedIv : iv).map(v => 60 / v);
   Object.assign(res, { hr: median(Float32Array.from(hrs)), hrMin: pct(hrs, 10), hrMax: pct(hrs, 90), beats: use.length, cycle: mi });
   if (use.length < 8) return { ...res, error: "깨끗한 박동이 " + use.length + "개뿐이라 S1·S2 분석을 할 수 없습니다. 잡음이 적을 때 다시 녹음해 주세요." };
@@ -298,36 +310,42 @@ async function analyzeRecording(raw, sr){
     const top = avg[pre], look = Math.round(0.12 * mi * fs2); let sec = -1, best = 0;
     for (let k = pre + Math.round(0.08 * mi * fs2); k < pre + Math.round(0.75 * mi * fs2); k++){
       if (!(avg[k] > avg[k - 1] && avg[k] >= avg[k + 1] && avg[k] > 0.08 * top)) continue;
-      let lo = avg[k]; for (let j = k; j < Math.min(W, k + look); j++) lo = Math.min(lo, avg[j]);
+      let lo = avg[k]; for (let j = k; j < Math.min(W, k + look); j++) if (avg[j] < lo) lo = avg[j];
       if (avg[k] - lo > best){ best = avg[k] - lo; sec = k; }
     }
     return sec;
   };
-  const okWin = st => { if (st < 0 || st + W > n) return false; for (let k = st; k < st + W; k++) if (clip[k]) return false; return true; };
-  const build = starts => { const a = new Float32Array(W); for (const st of starts) for (let k = 0; k < W; k++) a[k] += env[st + k] / starts.length; return a; };
+  // a beat's samples in window coordinates (NaN outside its own lo..hi)
+  const seg = (st, b) => { const s = new Float32Array(W).fill(NaN); for (let k = Math.max(0, b.lo - st); k < Math.min(W, b.hi - st); k++) s[k] = env[st + k]; return s; };
+  const okWin = (st, b) => { if (st < 0 || st + W > n) return false; for (let k = Math.max(st, b.lo); k < Math.min(st + W, b.hi); k++) if (clip[k]) return false; return true; };
+  // average where at least half of the beats contribute
+  const build = sg => { const a = new Float32Array(W), c = new Uint16Array(W);
+    for (const s of sg) for (let k = 0; k < W; k++) if (!isNaN(s[k])){ a[k] += s[k]; c[k]++; }
+    for (let k = 0; k < W; k++) a[k] = c[k] >= sg.length / 2 ? a[k] / c[k] : NaN; return a; };
+  const corr = (s, avg) => { let n1 = 0, sx = 0, sy = 0; for (let k = 0; k < W; k++) if (!isNaN(s[k]) && !isNaN(avg[k])){ sx += s[k]; sy += avg[k]; n1++; }
+    if (n1 < W / 4) return -Infinity; sx /= n1; sy /= n1; let c = 0, v1 = 0, v2 = 0;
+    for (let k = 0; k < W; k++) if (!isNaN(s[k]) && !isNaN(avg[k])){ const x = s[k] - sx, y = avg[k] - sy; c += x * y; v1 += x * x; v2 += y * y; }
+    return c / (Math.sqrt(v1 * v2) || 1); };
   // at fast heart rates the tallest sound per beat can be S1 on some beats and S2 on others, which would
   // smear a murmur over both intervals: realign each beat to the average (main sound, or the other sound)
-  let starts = use.map(p => p - pre), avg = build(starts);
+  let segs = use.map(b => seg(b.p - pre, b)), avg = build(segs);
   for (let it = 0; it < 3; it++){
     const sec = findSec(avg); if (sec < 0) break;
-    const d = sec - pre, offs = [0, d, d - M];
-    let am = 0; for (let k = 0; k < W; k++) am += avg[k] / W;
-    const next = [];
-    for (const p of use){
+    const d = sec - pre, offs = [0, d, d - M], next = [];
+    for (const b of use){
       let bs = null, bc = -Infinity;
       for (const o of offs){
-        const st = p - pre - o; if (!okWin(st)) continue;
-        let sm = 0; for (let k = 0; k < W; k++) sm += env[st + k] / W;
-        let c = 0, v1 = 0, v2 = 0; for (let k = 0; k < W; k++){ const x = env[st + k] - sm, y = avg[k] - am; c += x * y; v1 += x * x; v2 += y * y; }
-        c /= Math.sqrt(v1 * v2) || 1; if (bs === null || c > bc + 0.02){ bc = c; bs = st; }   // keep the main sound unless clearly worse
+        const st = b.p - pre - o; if (!okWin(st, b)) continue;
+        const s = seg(st, b), c = corr(s, avg);
+        if (bs === null || c > bc + 0.02){ bc = c; bs = s; }   // keep the main sound unless clearly worse
       }
       if (bs !== null) next.push(bs);
     }
     if (next.length < 8) break;
-    starts = next; avg = build(starts);
+    segs = next; avg = build(segs);
   }
-  const segs = starts.map(st => env.slice(st, st + W)), sec = findSec(avg), top = avg[pre];
-  res.beats = starts.length;
+  const sec = findSec(avg), top = avg[pre];
+  res.beats = segs.length;
   Object.assign(res, { avg, segs, pre, fs2, top });
   if (sec < 0) return { ...res, error: "평균 박동에서 두 번째 심음(S2)을 찾지 못했습니다." };
   const dt = (sec - pre) / fs2, mainIsS1 = dt < mi / 2;
@@ -335,7 +353,7 @@ async function analyzeRecording(raw, sr){
   const sys = [s1, s2], dia = [s2, s1 + mi];
   // floor of the interval rather than its mean: a murmur lifts the whole interval, while the tails of S1
   // and S2 only lift its edges (which matters when systole is short)
-  const minIn = (t0, t1) => { let m = Infinity; for (let k = Math.max(0, Math.round(pre + t0 * fs2)); k < Math.min(W, Math.round(pre + t1 * fs2)); k++) m = Math.min(m, avg[k]); return isFinite(m) ? m : NaN; };
+  const minIn = (t0, t1) => { let m = Infinity; for (let k = Math.max(0, Math.round(pre + t0 * fs2)); k < Math.min(W, Math.round(pre + t1 * fs2)); k++) if (avg[k] < m) m = avg[k]; return isFinite(m) ? m : NaN; };
   const sl = sys[1] - sys[0], dl = dia[1] - dia[0];
   const sysE = minIn(sys[0] + 0.25 * sl, sys[0] + 0.75 * sl), diaE = minIn(dia[0] + 0.3 * dl, dia[0] + 0.6 * dl);
   const ampAt = t => avg[Math.round(pre + t * fs2)] || 0;
