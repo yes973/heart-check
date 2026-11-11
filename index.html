@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>심음 녹음 가이드</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap">
+<style>
+/* Layout: one narrow column like a bedside monitor — status first, ECG-paper trace, numbers, controls */
+:root{
+  --paper:#fbf8f6; --ink:#1d2321; --muted:#5d6763; --line:#e3dcd8;
+  --grid-minor:#f3dcdc; --grid-major:#e8b9b9; --trace:#1b2a26; --panel:#ffffff;
+  --good:#1e8a5a; --warn:#b97a08; --bad:#c03d2b; --accent:#9b2f3f;
+  --f-body:"IBM Plex Sans KR",system-ui,-apple-system,"Malgun Gothic",sans-serif;
+  --f-num:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root{
+  --paper:#141716; --ink:#e4ebe8; --muted:#97a39e; --line:#2a302e;
+  --grid-minor:#2a2122; --grid-major:#4a3033; --trace:#e9f1ee; --panel:#1b1f1e;
+  --good:#3fbf86; --warn:#e0a83a; --bad:#ec6a55; --accent:#e07a8a; color-scheme:dark}}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0}
+body{background:var(--paper);color:var(--ink);font:15px/1.55 var(--f-body);
+  padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+.wrap{max-width:720px;margin:0 auto;padding-block:16px 40px;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
+  display:flex;flex-direction:column;gap:14px}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+h1{font-size:1.25rem;margin:0;letter-spacing:-.01em}
+h1 small{font-weight:400;color:var(--muted);font-size:.8rem;margin-left:6px}
+.rec-badge{font:600 .8rem var(--f-num);color:var(--bad);display:flex;align-items:center;gap:6px}
+.rec-badge::before{content:"";width:9px;height:9px;border-radius:50%;background:var(--bad);animation:blink 1s infinite}
+@keyframes blink{50%{opacity:.25}}
+@media (prefers-reduced-motion:reduce){.rec-badge::before{animation:none}}
+.status{display:grid;grid-template-columns:auto 1fr;gap:14px;align-items:center;
+  background:var(--panel);border:1px solid var(--line);border-left:6px solid var(--muted);border-radius:10px;padding:14px 16px}
+.status[data-level="good"]{border-left-color:var(--good)}
+.status[data-level="warn"]{border-left-color:var(--warn)}
+.status[data-level="bad"]{border-left-color:var(--bad)}
+.lamp{width:46px;height:46px;border-radius:50%;background:var(--line);transition:background .2s}
+.status[data-level="good"] .lamp{background:var(--good)}
+.status[data-level="warn"] .lamp{background:var(--warn)}
+.status[data-level="bad"] .lamp{background:var(--bad)}
+.status h2{margin:0;font-size:1.15rem;line-height:1.3}
+.status p{margin:2px 0 0;color:var(--muted);font-size:.92rem;min-width:0}
+.trace{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px}
+canvas{display:block;width:100%;max-width:100%}
+#wave{height:170px}
+#strip{height:16px;margin-top:6px;border-radius:3px}
+.cap{display:flex;justify-content:space-between;font-size:.75rem;color:var(--muted);margin-top:4px;gap:8px}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.m{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-width:0}
+.m .k{font-size:.72rem;color:var(--muted);letter-spacing:.02em}
+.m .v{font:600 1.5rem/1.2 var(--f-num);font-variant-numeric:tabular-nums}
+.m .u{font-size:.75rem;color:var(--muted);margin-left:2px;font-family:var(--f-body)}
+.bar{height:5px;background:var(--line);border-radius:3px;margin-top:6px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--good);transition:width .25s}
+@media (max-width:520px){.metrics{grid-template-columns:repeat(2,1fr)}}
+.controls{display:flex;flex-direction:column;gap:10px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+button,select{font:600 .95rem var(--f-body);border-radius:8px;border:1px solid var(--line);
+  background:var(--panel);color:var(--ink);padding:11px 16px;min-height:44px;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.rec{border-color:var(--bad);color:var(--bad)}
+button.rec.on{background:var(--bad);color:#fff}
+button:disabled{opacity:.45;cursor:not-allowed}
+button:focus-visible,select:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+select{flex:1 1 220px;min-width:0;font-weight:400}
+.file{font-size:.85rem;color:var(--muted)}
+.file input{font-size:.85rem;max-width:100%}
+.note{font-size:.8rem;color:var(--muted)}
+details{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 14px}
+summary{cursor:pointer;font-weight:600}
+details ul{margin:8px 0 2px;padding-left:20px}
+details li{margin:3px 0}
+#settings{font:500 .75rem var(--f-num);color:var(--muted);word-break:break-all}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>심음 녹음 가이드<small>청진기 + 유선 마이크용</small></h1>
+    <span class="rec-badge" id="recBadge" hidden>녹음 중 <span id="recTime">0:00</span></span>
+  </header>
+
+  <section class="status" id="status" data-level="idle" aria-live="polite">
+    <div class="lamp" aria-hidden="true"></div>
+    <div style="min-width:0">
+      <h2 id="stTitle">대기 중</h2>
+      <p id="stMsg">마이크를 연결하고 “듣기 시작”을 누르세요. 처음 5초는 분석을 준비합니다.</p>
+    </div>
+  </section>
+
+  <section class="trace" aria-label="실시간 심음 파형">
+    <canvas id="wave"></canvas>
+    <canvas id="strip" aria-label="최근 30초 품질 기록"></canvas>
+    <div class="cap"><span>최근 5초 파형 (25–400 Hz)</span><span>아래 띠: 최근 30초 품질</span></div>
+  </section>
+
+  <section class="metrics">
+    <div class="m"><div class="k">심박수</div><div class="v"><span id="hr">--</span><span class="u">회/분</span></div></div>
+    <div class="m"><div class="k">리듬 선명도</div><div class="v" id="str">--</div><div class="bar"><i id="strBar"></i></div></div>
+    <div class="m"><div class="k">신호 / 잡음</div><div class="v"><span id="ratio">--</span><span class="u">배</span></div><div class="bar"><i id="ratioBar"></i></div></div>
+    <div class="m"><div class="k">깨끗한 녹음</div><div class="v"><span id="clean">0</span><span class="u">/ 30초</span></div><div class="bar"><i id="cleanBar"></i></div></div>
+  </section>
+
+  <section class="controls">
+    <div class="row">
+      <button class="primary" id="btnListen">듣기 시작</button>
+      <button class="rec" id="btnRec" disabled>녹음</button>
+      <button id="btnSave" disabled>WAV 저장</button>
+    </div>
+    <div class="row">
+      <label for="mic" class="note">입력 장치</label>
+      <select id="mic"><option value="">기본 마이크</option></select>
+    </div>
+    <div class="file"><label for="fileIn">마이크 없이 시험: 녹음 파일(WAV) 재생 분석</label><br><input type="file" id="fileIn" accept="audio/*"></div>
+    <div id="settings"></div>
+  </section>
+
+  <details>
+    <summary>판정 기준과 안내</summary>
+    <ul>
+      <li><b>좋음(초록)</b>: 리듬 선명도 0.30 이상, 신호/잡음 7배 이상. 이 상태로 녹음된 시간만 “깨끗한 녹음”에 쌓입니다.</li>
+      <li><b>주의(노랑)</b>: 심음은 잡히지만 잡음이 섞임. <b>불량(빨강)</b>: 소리 찢어짐, 신호 없음, 큰 움직임, 잡음이 심음을 덮음.</li>
+      <li>헐떡임이 섞이면 2–3초 입을 살짝 잡아 주세요. 털이 많으면 살짝 적시고 헤드를 단단히 대세요. 위치는 좌측 심첨부가 기준입니다.</li>
+      <li>마이크: BY-M1 PRO II는 TRRS, 게인 −10 dB로 시작. 소리가 찢어지면 헤드 압력을 줄이거나 게인을 낮추세요.</li>
+      <li>소리는 이 폰 안에서만 처리되며 어디로도 전송되지 않습니다. WAV 저장은 이 폰에 파일로 남습니다.</li>
+      <li>녹음 품질 확인용 도구이며 심잡음을 진단하지 않습니다.</li>
+    </ul>
+  </details>
+</div>
+
+<script>
+"use strict";
+// ---- Analyzer: same logic as the offline Python check (quality.py) ----
+const TH = { strGood: 0.30, ratioGood: 7, strWarn: 0.20, ratioWarn: 5, spike: 2.5, minRms: 0.002, breath: 0.30 };
+
+class Ring {
+  constructor(n){ this.a = new Float32Array(n); this.n = n; this.i = 0; this.count = 0; }
+  push(v){ this.a[this.i] = v; this.i = (this.i + 1) % this.n; this.count++; }
+  last(k){ k = Math.min(k, this.n, this.count); const out = new Float32Array(k);
+    let s = (this.i - k + this.n) % this.n;
+    for (let j = 0; j < k; j++){ out[j] = this.a[s]; s = (s + 1) % this.n; } return out; }
+}
+const pct = (arr, p) => { const s = Float32Array.from(arr).sort(); return s[Math.min(s.length - 1, Math.floor(p / 100 * s.length))]; };
+const median = arr => pct(arr, 50);
+function zAuto(x, lo, hi){ // normalized autocorrelation for lags lo..hi
+  const n = x.length; let m = 0; for (const v of x) m += v; m /= n;
+  let sd = 0; for (const v of x) sd += (v - m) ** 2; sd = Math.sqrt(sd / n) + 1e-12;
+  const z = x.map(v => (v - m) / sd); const ac = new Float32Array(hi + 2);
+  for (let L = 0; L <= hi + 1 && L < n; L++){ let s = 0; for (let i = 0; i + L < n; i++) s += z[i] * z[i + L]; ac[L] = s / n; }
+  return ac;
+}
+
+class Analyzer {
+  constructor(fs){
+    this.D = Math.round(fs / 2000); this.fs2 = fs / this.D;
+    this.d = new Ring(Math.ceil(10 * this.fs2));   // decimated filtered signal
+    this.env = new Ring(1000);                       // 100 Hz energy envelope
+    this.a = Math.exp(-2 * Math.PI * 20 / this.fs2); this.e = 0;
+    this.k = 0; this.sum = 0; this.rawMax = 0; this.envAcc = 0; this.envK = 0;
+    this.clipAt = -1e9; this.n = 0; this.hrHist = [];
+  }
+  push(raw, filt){
+    for (let j = 0; j < filt.length; j++){
+      this.sum += filt[j]; const r = Math.abs(raw[j]); if (r > this.rawMax) this.rawMax = r;
+      if (++this.k === this.D){
+        const v = this.sum / this.D; this.d.push(v); this.n++;
+        if (this.rawMax > 0.98) this.clipAt = this.n;
+        this.e = (1 - this.a) * v * v + this.a * this.e;
+        this.envAcc += Math.sqrt(Math.max(this.e, 0));
+        if (++this.envK === 20){ this.env.push(this.envAcc / 20); this.envAcc = 0; this.envK = 0; }
+        this.k = 0; this.sum = 0; this.rawMax = 0;
+      }
+    }
+  }
+  get seconds(){ return this.n / this.fs2; }
+  analyze(){
+    const fs2 = this.fs2, B = Math.round(0.25 * fs2), W = Math.round(5 * fs2);
+    if (this.n < W) return null;
+    const env = this.env.last(500), ac = zAuto(env, 25, 150);
+    let best = 0; for (let L = 26; L < 150; L++) if (ac[L] > ac[L - 1] && ac[L] >= ac[L + 1] && (!best || ac[L] > ac[best])) best = L;
+    const strength = best ? ac[best] : 0, hrNow = best ? 6000 / best : 0;
+    const w = this.d.last(W), absw = w.map(Math.abs);
+    const a3 = absw.subarray(W - Math.round(3 * fs2));
+    const ratio = pct(a3, 99) / (median(a3) + 1e-9);
+    let rs = 0; for (const v of w) rs += v * v; const rms5 = Math.sqrt(rs / W);
+    const ref = pct(absw.subarray(0, W - B), 99); let mx = 0; for (let i = W - B; i < W; i++) mx = Math.max(mx, absw[i]);
+    const spike = mx / (ref + 1e-9);
+    const d8 = this.d.last(Math.round(8 * fs2)).map(Math.abs), nb = Math.floor(d8.length / B);
+    let breath = 0; if (nb >= 12){ const fl = new Float32Array(nb); for (let b = 0; b < nb; b++) fl[b] = median(d8.subarray(b * B, (b + 1) * B));
+      const acf = zAuto(fl, 3, 12); for (let L = 3; L <= 12; L++) breath = Math.max(breath, acf[L]); }
+    const clip = this.n - this.clipAt < B;
+    if (strength >= 0.25){ this.hrHist.push(hrNow); if (this.hrHist.length > 8) this.hrHist.shift(); }
+    const hr = this.hrHist.length >= 3 && strength >= 0.25 ? median(this.hrHist) : 0;
+    return { strength, ratio, rms5, spike, breath, clip, hr, ...judge({ strength, ratio, rms5, spike, breath, clip }) };
+  }
+}
+function judge(m){
+  if (m.clip) return { level: "bad", title: "소리가 찢어집니다", msg: "헤드를 누르는 힘을 줄이거나 마이크 게인을 −10 dB로 낮추세요." };
+  if (m.rms5 < TH.minRms) return { level: "bad", title: "신호가 거의 없습니다", msg: "마이크 연결과 입력 장치를 확인하고, 헤드를 피부에 밀착하세요." };
+  if (m.spike > TH.spike) return { level: "bad", title: "움직임·마찰음", msg: "헤드가 미끄러지거나 손·털이 스쳤습니다. 헤드를 고정하고 잠시 기다리세요." };
+  if (m.strength >= TH.strGood && m.ratio >= TH.ratioGood) return { level: "good", title: "좋습니다. 그대로 유지하세요", msg: "심음이 또렷하게 잡히고 있습니다." };
+  if (m.ratio < TH.ratioWarn || m.strength < TH.strWarn){
+    if (m.breath >= TH.breath) return { level: "bad", title: "호흡·헐떡임 잡음", msg: "잡음이 호흡 주기로 출렁입니다. 2–3초 입을 살짝 잡아 헐떡임을 멈춰 주세요." };
+    return { level: "bad", title: "잡음이 심음을 덮고 있습니다", msg: "털 마찰·헐떡임·주변 소음을 줄이세요. 헤드를 단단히 대고, 털은 살짝 적셔 보세요." };
+  }
+  if (m.ratio < TH.ratioGood) return { level: "warn", title: "잡음이 섞여 있습니다", msg: m.breath >= TH.breath ? "호흡 잡음이 섞입니다. 차분해질 때까지 기다리거나 입을 잠깐 잡아 주세요." : "헤드를 조금 더 단단히 대고 움직임을 줄여 보세요." };
+  return { level: "warn", title: "심박 리듬이 흐릿합니다", msg: "위치를 좌측 심첨부 쪽으로 조금씩 옮겨 가장 또렷한 곳을 찾으세요." };
+}
+
+// ---- Audio graph ----
+const WORKLET = `class Tap extends AudioWorkletProcessor{constructor(){super();this.r=new Float32Array(2048);this.f=new Float32Array(2048);this.i=0}
+process(inp){const x=inp[0];if(!x||!x.length)return true;const a=x[0],b=x[1]||x[0];
+for(let j=0;j<a.length;j++){this.r[this.i]=a[j];this.f[this.i]=b[j];if(++this.i===2048){this.port.postMessage([this.r,this.f]);this.r=new Float32Array(2048);this.f=new Float32Array(2048);this.i=0}}return true}}
+registerProcessor("tap",Tap);`;
+let ctx = null, stream = null, src = null, node = null, an = null, timer = null, wakeLock = null;
+let recording = false, recChunks = [], recLen = 0, cleanSec = 0, history = [], mode = "";
+const $ = id => document.getElementById(id);
+
+async function buildGraph(sourceNode){
+  ctx = sourceNode.context;
+  if (ctx.state === "suspended") await ctx.resume();
+  const url = URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" }));
+  await ctx.audioWorklet.addModule(url);
+  const mk = (type, f) => { const b = ctx.createBiquadFilter(); b.type = type; b.frequency.value = f; b.Q.value = Math.SQRT1_2; return b; };
+  const hp1 = mk("highpass", 25), hp2 = mk("highpass", 25), lp1 = mk("lowpass", 400), lp2 = mk("lowpass", 400);
+  const merger = ctx.createChannelMerger(2);
+  sourceNode.connect(merger, 0, 0);
+  sourceNode.connect(hp1); hp1.connect(hp2); hp2.connect(lp1); lp1.connect(lp2); lp2.connect(merger, 0, 1);
+  node = new AudioWorkletNode(ctx, "tap", { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 2, channelCountMode: "explicit" });
+  merger.connect(node);
+  const mute = ctx.createGain(); mute.gain.value = 0; node.connect(mute); mute.connect(ctx.destination);
+  an = new Analyzer(ctx.sampleRate); cleanSec = 0; history = [];
+  node.port.onmessage = e => {
+    const [r, f] = e.data; an.push(r, f);
+    if (recording){ recChunks.push(r); recLen += r.length; }
+  };
+  timer = setInterval(tick, 250);
+  requestAnimationFrame(draw);
+}
+
+async function startMic(){
+  stopAll();
+  const deviceId = $("mic").value;
+  stream = await navigator.mediaDevices.getUserMedia({ audio: {
+    deviceId: deviceId ? { exact: deviceId } : undefined, channelCount: 1,
+    echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+  const c = new AudioContext();
+  src = c.createMediaStreamSource(stream);
+  await buildGraph(src);
+  const s = stream.getAudioTracks()[0].getSettings();
+  $("settings").textContent = `입력: ${stream.getAudioTracks()[0].label || "기본"} · ${c.sampleRate} Hz · 에코제거 ${onOff(s.echoCancellation)} · 잡음억제 ${onOff(s.noiseSuppression)} · 자동게인 ${onOff(s.autoGainControl)}`;
+  await listDevices();
+  mode = "mic";
+  try { wakeLock = await navigator.wakeLock?.request("screen"); } catch (_) {}
+  setRunning(true, true);
+}
+const onOff = v => v === undefined ? "?" : v ? "켜짐" : "꺼짐";
+
+async function startFile(file){
+  stopAll();
+  const c = new AudioContext();
+  const buf = await c.decodeAudioData(await file.arrayBuffer());
+  src = c.createBufferSource(); src.buffer = buf;
+  await buildGraph(src);
+  src.onended = () => { setStatus({ level: "idle", title: "파일 재생 끝", msg: "다른 파일을 고르거나 마이크로 시작하세요." }); stopAll(true); };
+  src.start();
+  mode = "file";
+  $("settings").textContent = `파일: ${file.name} · ${buf.sampleRate} Hz · ${buf.duration.toFixed(1)}초 (실시간 재생 분석)`;
+  setRunning(true, false);
+}
+
+function stopAll(keepView){
+  if (recording) toggleRec();
+  clearInterval(timer); timer = null;
+  try { src && src.stop && src.stop(); } catch (_) {}
+  stream && stream.getTracks().forEach(t => t.stop()); stream = null;
+  ctx && ctx.close(); ctx = null; node = null; src = null;
+  try { wakeLock && wakeLock.release(); } catch (_) {} wakeLock = null;
+  setRunning(false, false);
+  if (!keepView) an = null;
+}
+
+function setRunning(on, isMic){
+  $("btnListen").textContent = on ? "정지" : "듣기 시작";
+  $("btnListen").classList.toggle("primary", !on);
+  $("btnRec").disabled = !(on && isMic);
+}
+
+async function listDevices(){
+  try {
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "audioinput");
+    const sel = $("mic"), cur = sel.value;
+    sel.innerHTML = '<option value="">기본 마이크</option>' + devs.map((d, i) => `<option value="${d.deviceId}">${(d.label || "마이크 " + (i + 1)).replace(/</g, "&lt;")}</option>`).join("");
+    sel.value = devs.some(d => d.deviceId === cur) ? cur : "";
+  } catch (_) {}
+}
+
+function toggleRec(){
+  recording = !recording;
+  $("btnRec").classList.toggle("on", recording);
+  $("btnRec").textContent = recording ? "녹음 끝" : "녹음";
+  $("recBadge").hidden = !recording;
+  if (recording){ recChunks = []; recLen = 0; cleanSec = 0; $("btnSave").disabled = true; }
+  else $("btnSave").disabled = recLen === 0;
+}
+
+function saveWav(){
+  if (!recLen) return;
+  const sr = an ? Math.round(an.fs2 * an.D) : 48000;
+  const buf = new ArrayBuffer(44 + recLen * 2), v = new DataView(buf);
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, "RIFF"); v.setUint32(4, 36 + recLen * 2, true); w(8, "WAVE"); w(12, "fmt "); v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, "data"); v.setUint32(40, recLen * 2, true);
+  let o = 44; for (const c of recChunks) for (let i = 0; i < c.length; i++, o += 2) v.setInt16(o, Math.max(-1, Math.min(1, c[i])) * 32767, true);
+  const d = new Date(), p = n => String(n).padStart(2, "0");
+  const name = `heart_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.wav`;
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([buf], { type: "audio/wav" })); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+// ---- UI updates ----
+function setStatus(s){ $("status").dataset.level = s.level; $("stTitle").textContent = s.title; $("stMsg").textContent = s.msg; }
+function tick(){
+  if (!an) return;
+  if (recording){ const t = Math.floor(recLen / (an.fs2 * an.D)); $("recTime").textContent = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; }
+  const r = an.analyze();
+  if (!r){ setStatus({ level: "idle", title: "분석 준비 중…", msg: `헤드를 대고 그대로 유지하세요 (${Math.max(0, 5 - an.seconds).toFixed(0)}초)` }); return; }
+  setStatus(r);
+  history.push(r.level); if (history.length > 120) history.shift();
+  if (r.level === "good" && (recording || mode === "file")) cleanSec += 0.25;
+  $("hr").textContent = r.hr ? Math.round(r.hr) : "--";
+  $("str").textContent = r.strength.toFixed(2);
+  $("ratio").textContent = r.ratio.toFixed(1);
+  $("strBar").style.width = Math.min(100, r.strength / 0.6 * 100) + "%";
+  $("ratioBar").style.width = Math.min(100, r.ratio / 20 * 100) + "%";
+  $("clean").textContent = Math.floor(cleanSec);
+  $("cleanBar").style.width = Math.min(100, cleanSec / 30 * 100) + "%";
+}
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function fit(c){ const r = c.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  if (c.width !== Math.round(r.width * dpr) || c.height !== Math.round(r.height * dpr)){ c.width = Math.round(r.width * dpr); c.height = Math.round(r.height * dpr); }
+  return [c.getContext("2d"), c.width, c.height, dpr]; }
+function drawGrid(g, W, H, dpr){
+  if (W < 20 || H < 20) return;
+  g.fillStyle = css("--panel"); g.fillRect(0, 0, W, H);
+  const sec = W / 5, minor = sec / 5;
+  for (let x = 0, i = 0; x <= W + 1; x += minor, i++){ g.strokeStyle = css(i % 5 ? "--grid-minor" : "--grid-major"); g.lineWidth = dpr * (i % 5 ? 0.6 : 1); g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
+  for (let y = H / 2 % minor, i = 0; y <= H; y += minor, i++){ g.strokeStyle = css("--grid-minor"); g.lineWidth = dpr * 0.6; g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
+}
+function draw(){
+  const [g, W, H, dpr] = fit($("wave"));
+  drawGrid(g, W, H, dpr);
+  if (an && an.n > 10){
+    const k = Math.round(5 * an.fs2), x = an.d.last(k);
+    const sc = (pct(x.map(Math.abs), 99.5) * 1.4) || 1e-3;
+    g.strokeStyle = css("--trace"); g.lineWidth = 1.4 * dpr; g.beginPath();
+    const off = W * (1 - x.length / k);
+    for (let i = 0; i < x.length; i++){ const px = off + i / k * W, py = H / 2 - Math.max(-1, Math.min(1, x[i] / sc)) * H / 2 * 0.92; i ? g.lineTo(px, py) : g.moveTo(px, py); }
+    g.stroke();
+  }
+  const [s, SW, SH] = fit($("strip"));
+  s.fillStyle = css("--line"); s.fillRect(0, 0, SW, SH);
+  const cw = SW / 120;
+  history.forEach((lv, i) => { s.fillStyle = css(lv === "good" ? "--good" : lv === "warn" ? "--warn" : "--bad"); s.fillRect(SW - (history.length - i) * cw, 0, Math.ceil(cw), SH); });
+  if (ctx) requestAnimationFrame(draw);
+}
+
+$("btnListen").onclick = async () => {
+  if (ctx){ stopAll(true); setStatus({ level: "idle", title: "정지됨", msg: "다시 시작하려면 “듣기 시작”을 누르세요." }); return; }
+  try { await startMic(); }
+  catch (e){ setStatus({ level: "bad", title: "마이크를 열 수 없습니다", msg: (e && e.name === "NotAllowedError") ? "브라우저 주소창의 권한 설정에서 마이크를 허용해 주세요." : "마이크 연결을 확인하고 다시 시도하세요. (" + (e && e.message || e) + ")" }); stopAll(true); }
+};
+$("btnRec").onclick = toggleRec;
+$("btnSave").onclick = saveWav;
+$("mic").onchange = () => { if (stream) startMic().catch(e => { setStatus({ level: "bad", title: "이 입력 장치를 열 수 없습니다", msg: String(e && e.message || e) }); stopAll(true); }); };
+$("fileIn").onchange = e => { const f = e.target.files[0]; if (f) startFile(f).catch(err => setStatus({ level: "bad", title: "파일을 읽을 수 없습니다", msg: String(err && err.message || err) })); };
+window.addEventListener("resize", () => requestAnimationFrame(draw));
+draw();
+</script>
+</body>
+</html>
