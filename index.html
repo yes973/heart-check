@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>심음 녹음 가이드</title>
+<title>강아지 심음 녹음 가이드</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap">
 <style>
@@ -91,7 +91,7 @@ textarea{width:100%;font:13px/1.5 var(--f-body);background:var(--panel);color:va
 <body>
 <div class="wrap">
   <header>
-    <h1>심음 녹음 가이드<small>청진기 + 유선 마이크용</small></h1>
+    <h1>강아지 심음 녹음 가이드<small>개 전용 · 청진기 + 유선 마이크</small></h1>
     <span class="rec-badge" id="recBadge" hidden>녹음 중 <span id="recTime">0:00</span></span>
   </header>
 
@@ -143,7 +143,7 @@ textarea{width:100%;font:13px/1.5 var(--f-body);background:var(--panel);color:va
       <div class="cap"><span>박동 평균 (회색: 각 박동, 검정: 평균)</span><span>분홍 구간: 수축기</span></div></div>
     <div class="row"><button id="btnCopy">결과 복사</button></div>
     <textarea id="rpText" hidden rows="6" aria-label="분석 결과 글"></textarea>
-    <p class="note">수축기/확장기 에너지는 1.0 근처가 정상 녹음의 값입니다. 1.3·1.8 기준은 교재·공개 심잡음 음원으로만 점검했고 실제 환자 녹음으로는 아직 보정하지 않았습니다. 수축기 심잡음(이첨판·삼첨판 역류, 대동맥·폐동맥 협착, VSD 등)을 겨냥하며, 확장기 심잡음과 빠른 심박의 약한 박출성 심잡음은 놓칠 수 있습니다. 진단이 아니라 녹음 확인용입니다.</p>
+    <p class="note">수축기/확장기 에너지는 1.0 근처가 정상 녹음의 값입니다. 1.3·1.8 기준은 교재·공개 심잡음 음원으로만 점검했고 실제 환자 녹음으로는 아직 보정하지 않았습니다. 개의 수축기 심잡음(소형견 이첨판 질환(MMVD), 삼첨판 역류, 대동맥·폐동맥 협착, VSD 등)을 겨냥하며, 확장기 심잡음과 빠른 심박의 약한 박출성 심잡음은 놓칠 수 있습니다. 진단이 아니라 녹음 확인용입니다.</p>
   </section>
 
   <details>
@@ -151,7 +151,9 @@ textarea{width:100%;font:13px/1.5 var(--f-body);background:var(--panel);color:va
     <ul>
       <li><b>좋음(초록)</b>: 리듬 선명도 0.30 이상, 신호/잡음 7배 이상. 이 상태로 녹음된 시간만 “깨끗한 녹음”에 쌓입니다.</li>
       <li><b>주의(노랑)</b>: 심음은 잡히지만 잡음이 섞임. <b>불량(빨강)</b>: 소리 찢어짐, 신호 없음, 큰 움직임, 잡음이 심음을 덮음.</li>
-      <li>헐떡임이 섞이면 2–3초 입을 살짝 잡아 주세요. 털이 많으면 살짝 적시고 헤드를 단단히 대세요. 위치는 좌측 심첨부가 기준입니다.</li>
+      <li><b>개 전용입니다.</b> 고양이는 심박이 빠르고(200회/분 이상) 청진 소견의 진단 가치가 낮아 지원하지 않습니다.</li>
+      <li>위치: 기본은 <b>좌측 심첨부</b>(왼쪽 5번째 늑간, 늑연골 접합부 근처)로, 이첨판 역류(MMVD) 심잡음이 가장 잘 들립니다. 좌측 심기저부(3–4번째 늑간)는 폐동맥·대동맥 협착과 PDA, 우측 4–5번째 늑간은 삼첨판 역류를 확인할 때 씁니다.</li>
+      <li>서 있거나 엎드린 자세로, 30초 이상 녹음하세요. 헐떡임이 섞이면 2–3초 입을 살짝 잡아 주세요. 털이 많으면 살짝 적시고 헤드를 단단히 대세요.</li>
       <li>마이크: BY-M1 PRO II는 TRRS, 게인 −10 dB로 시작. 소리가 찢어지면 헤드 압력을 줄이거나 게인을 낮추세요.</li>
       <li>소리는 이 폰 안에서만 처리되며 어디로도 전송되지 않습니다. WAV 저장은 이 폰에 파일로 남습니다.</li>
       <li>녹음 품질 확인용 도구이며 심잡음을 진단하지 않습니다.</li>
@@ -378,7 +380,20 @@ async function analyzeRecording(raw, sr){
   return { ...res, s1, s2, sys, dia, s1s2: sl, s2s1Amp: amp < 0.9 ? amp : null, ambiguous, excess, ratio: ambiguous ? Math.max(se, 1 / se) : se };
 }
 
+// dogs at rest: about 60-180/min (toy breeds faster). Above 220 S1 and S2 run together and the
+// systole/diastole split becomes unreliable, so a "no murmur" result is not trusted there.
+const HR_DOG = { slow: 50, fast: 220 };
 function verdict(r){
+  const v = verdictCore(r);
+  if (!r.hr || r.error) return v;
+  if (r.hr > HR_DOG.fast){
+    const t = ` 심박이 ${Math.round(r.hr)}회/분으로 매우 빨라 S1·S2 구분이 불안정합니다. 흥분·빈맥일 수 있으니 차분해진 뒤 다시 녹음해 확인하세요.`;
+    return v.level === "good" ? { level: "warn", text: v.text + t } : { ...v, text: v.text + t };
+  }
+  if (r.hr < HR_DOG.slow) return { ...v, text: v.text + ` 심박이 ${Math.round(r.hr)}회/분으로 느립니다(서맥). 청진·심전도로 확인하세요.` };
+  return v;
+}
+function verdictCore(r){
   const lowQ = r.beats < 15 || r.goodPct < 30;
   if (r.error && r.broad >= 0.3 && !lowQ) return { level: "bad", text: "두 번째 심음(S2)이 묻힐 만큼 긴 소리가 박동마다 이어집니다. 큰 심잡음일 수 있으니 청진으로 확인하세요." };
   if (r.error) return { level: "warn", text: r.error };
