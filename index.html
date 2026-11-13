@@ -143,7 +143,7 @@ textarea{width:100%;font:13px/1.5 var(--f-body);background:var(--panel);color:va
       <div class="cap"><span>박동 평균 (회색: 각 박동, 검정: 평균)</span><span>분홍 구간: 수축기</span></div></div>
     <div class="row"><button id="btnCopy">결과 복사</button></div>
     <textarea id="rpText" hidden rows="6" aria-label="분석 결과 글"></textarea>
-    <p class="note">수축기/확장기 에너지는 1.0 근처가 정상 녹음의 값입니다. 1.3·1.8 기준은 실험적이며, 심잡음 환자 녹음으로 아직 보정하지 않았습니다. 진단이 아니라 녹음 확인용입니다.</p>
+    <p class="note">수축기/확장기 에너지는 1.0 근처가 정상 녹음의 값입니다. 1.3·1.8 기준은 교재·공개 심잡음 음원으로만 점검했고 실제 환자 녹음으로는 아직 보정하지 않았습니다. 수축기 심잡음(이첨판·삼첨판 역류, 대동맥·폐동맥 협착, VSD 등)을 겨냥하며, 확장기 심잡음과 빠른 심박의 약한 박출성 심잡음은 놓칠 수 있습니다. 진단이 아니라 녹음 확인용입니다.</p>
   </section>
 
   <details>
@@ -352,7 +352,12 @@ async function analyzeRecording(raw, sr){
   const sec = findSec(avg), top = avg[pre];
   res.beats = segs.length;
   Object.assign(res, { avg, segs, pre, fs2, top });
-  if (sec < 0) return { ...res, error: "평균 박동에서 두 번째 심음(S2)을 찾지 못했습니다." };
+  if (sec < 0){
+    // a loud murmur can bury S2: then the average stays high over much of the cycle
+    let hi = 0, tot = 0;
+    for (let k = Math.round(pre - 0.3 * M); k < Math.round(pre + 0.7 * M); k++) if (k >= 0 && k < W && !isNaN(avg[k])){ tot++; if (avg[k] >= 0.5 * top) hi++; }
+    return { ...res, broad: tot ? hi / tot : 0, error: "평균 박동에서 두 번째 심음(S2)을 찾지 못했습니다." };
+  }
   const dt = (sec - pre) / fs2, mainIsS1 = dt < mi / 2;
   const s1 = mainIsS1 ? 0 : dt - mi, s2 = mainIsS1 ? dt : 0;     // seconds relative to main sound
   const sys = [s1, s2], dia = [s2, s1 + mi];
@@ -367,14 +372,20 @@ async function analyzeRecording(raw, sr){
   // at fast heart rates systole and diastole last almost equally long, so S1/S2 labels may be swapped:
   // then judge by whichever of the two intervals carries more extra sound
   const ambiguous = (dl - sl) / dl < 0.25, se = sysE / diaE;
-  return { ...res, s1, s2, sys, dia, s1s2: sl, s2s1Amp: amp < 0.9 ? amp : null, ambiguous, ratio: ambiguous ? Math.max(se, 1 / se) : se };
+  // extra sound as a share of the main sound: on very quiet (edited or noise-gated) recordings both floors
+  // are near zero, so a large ratio can come from a tiny difference
+  const excess = (ambiguous ? Math.abs(sysE - diaE) : sysE - diaE) / top;
+  return { ...res, s1, s2, sys, dia, s1s2: sl, s2s1Amp: amp < 0.9 ? amp : null, ambiguous, excess, ratio: ambiguous ? Math.max(se, 1 / se) : se };
 }
 
 function verdict(r){
+  const lowQ = r.beats < 15 || r.goodPct < 30;
+  if (r.error && r.broad >= 0.3 && !lowQ) return { level: "bad", text: "두 번째 심음(S2)이 묻힐 만큼 긴 소리가 박동마다 이어집니다. 큰 심잡음일 수 있으니 청진으로 확인하세요." };
   if (r.error) return { level: "warn", text: r.error };
-  if (r.beats < 15 || r.goodPct < 30) return { level: "warn", text: `녹음 품질이 낮아 심잡음 판단을 보류합니다 (깨끗한 구간 ${Math.round(r.goodPct)}%, 분석 박동 ${r.beats}개). 깨끗한 구간 30% 이상, 박동 15개 이상이 필요합니다.` };
+  if (lowQ) return { level: "warn", text: `녹음 품질이 낮아 심잡음 판단을 보류합니다 (깨끗한 구간 ${Math.round(r.goodPct)}%, 분석 박동 ${r.beats}개). 깨끗한 구간 30% 이상, 박동 15개 이상이 필요합니다.` };
   const where = r.ambiguous ? "두 심음 사이" : "수축기(S1–S2 사이)";
   const note = r.ambiguous ? " 심박이 빨라 S1·S2 구분이 불확실하므로 두 구간 중 소리가 큰 쪽으로 판정했습니다." : "";
+  if (r.ratio >= 1.3 && r.excess < 0.02) return { level: "good", text: `${where}에 의미 있는 추가 소리가 보이지 않습니다. 두 구간 모두 매우 조용해서 비율만 높게 나왔습니다 (차이는 주 심음의 ${Math.max(0, r.excess * 100).toFixed(1)}%).${note}` };
   if (r.ratio >= 1.8) return { level: "bad", text: `${where}에 뚜렷한 추가 소리가 있습니다. 심잡음일 수 있으니 청진으로 확인하세요.${note}` };
   if (r.ratio >= 1.3) return { level: "warn", text: `${where}에 약간의 추가 소리가 있습니다. 약한 심잡음이거나 녹음 잡음일 수 있습니다.${note}` };
   return { level: "good", text: `${where}에 추가 소리가 보이지 않습니다. 이 녹음에서는 심잡음 소견이 없습니다.${note}` };
